@@ -360,7 +360,7 @@ class FeedbackRepository:
             start_date: Start date for the range
             end_date: End date for the range
             skip: Number of records to skip
-            limit: Maximum number of records to return
+            limit: Maximum number of feedbacks to return
 
         Returns:
             List[Feedback]: List of feedback objects within date range

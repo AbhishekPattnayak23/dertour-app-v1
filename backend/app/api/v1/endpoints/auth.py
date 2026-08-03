@@ -61,20 +61,24 @@ SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
+security = HTTPBearer(auto_error=False)
 security_bearer = HTTPBearer(auto_error=False)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a password against its hash."""
     return pwd_context.verify(plain_password, hashed_password)
 
 
 def get_password_hash(password: str) -> str:
+    """Hash a password."""
     return pwd_context.hash(password)
 
 
 def create_access_token(data: Dict[str, Any],
                         expires_delta: Optional[timedelta] = None) -> str:
+    """Create a JWT access token."""
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
@@ -99,7 +103,7 @@ if LEGACY_DB_AVAILABLE:
         return user
 
     async def get_current_user_legacy(
-        credentials: HTTPAuthorizationCredentials = Depends(security_bearer),
+        credentials: HTTPAuthorizationCredentials = Depends(security),
         db: Session = Depends(get_db)
     ) -> Any:
         credentials_exception = HTTPException(
@@ -127,7 +131,7 @@ if LEGACY_DB_AVAILABLE:
 
 
 if FASTAPI_AVAILABLE:
-    router = APIRouter(prefix="/auth", tags=["authentication"])
+    router = APIRouter()
 
     # -------------------------------------------------------
     # Request/Response Models
@@ -264,7 +268,6 @@ if FASTAPI_AVAILABLE:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail=e.message,
-                    headers={"WWW-Authenticate": "Bearer"},
                 )
             except Exception as e:
                 logger.error(f"Token refresh error: {str(e)}")
@@ -273,87 +276,66 @@ if FASTAPI_AVAILABLE:
                     detail="Token refresh failed",
                 )
 
-        @router.get("/me", status_code=status.HTTP_200_OK)
-        async def get_me(
-            current_user: Dict[str, Any] = Depends(azure_get_current_user),
+        @router.get("/profile")
+        async def get_profile(
+            current_user: Dict[str, Any] = Depends(azure_get_current_user)
         ) -> Dict[str, Any]:
-            """
-            Get current authenticated user's information.
-            """
+            """Get user profile."""
             return current_user
 
-        @router.post("/validate", status_code=status.HTTP_200_OK)
-        async def validate(request: TokenValidationRequest) -> Dict[str, Any]:
-            """
-            Validate a JWT token and return its claims.
-            """
-            try:
-                claims = validate_token(request.token)
-                return {"valid": True, "claims": claims}
-            except TokenValidationError as e:
+    else:
+        # Fallback endpoints if Azure auth is not available
+        @router.post("/login")
+        async def login():
+            """User login endpoint."""
+            return {"message": "Login endpoint"}
+
+        @router.post("/logout")
+        async def logout():
+            """User logout endpoint."""
+            return {"message": "Logout endpoint"}
+
+        @router.get("/profile")
+        async def get_profile():
+            """Get user profile."""
+            return {"message": "Profile endpoint"}
+
+    # Legacy endpoints for backward compatibility
+    if LEGACY_DB_AVAILABLE:
+        @router.post("/login/legacy", response_model=Token)
+        async def login_legacy(login_data: LegacyLoginRequest, db: Session = Depends(get_db)):
+            user = authenticate_user(db, login_data.email, login_data.password)
+            if not user:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=str(e),
+                    detail="Incorrect email or password",
+                    headers={"WWW-Authenticate": "Bearer"},
                 )
+            access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+            access_token = create_access_token(
+                data={"sub": user.email}, expires_delta=access_token_expires
+            )
+            return {"access_token": access_token, "token_type": "bearer"}
 
-        @router.get("/health", status_code=status.HTTP_200_OK)
-        async def health_check() -> Dict[str, Any]:
-            """Health check endpoint for the auth service."""
-            return {"status": "healthy", "service": "azure-auth"}
+        @router.get("/me", response_model=UserProfile)
+        async def get_current_user_profile(
+            current_user: User = Depends(get_current_user_legacy)
+        ):
+            return UserProfile(
+                id=current_user.id,
+                email=current_user.email,
+                name=current_user.name,
+                role=current_user.role,
+                department=current_user.department
+            )
 
-    else:
-        # Legacy JWT-based endpoints when Azure auth is not available
-        if LEGACY_DB_AVAILABLE:
-
-            @router.post("/login", response_model=Token)
-            async def login(login_data: LegacyLoginRequest, db: Session = Depends(get_db)):
-                user = authenticate_user(db, login_data.email, login_data.password)
-                if not user:
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Incorrect email or password",
-                        headers={"WWW-Authenticate": "Bearer"},
-                    )
-                access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-                access_token = create_access_token(
-                    data={"sub": user.email}, expires_delta=access_token_expires
-                )
-                return {"access_token": access_token, "token_type": "bearer"}
-
-            @router.get("/me", response_model=UserProfile)
-            async def get_current_user_profile(
-                current_user: User = Depends(get_current_user_legacy)
-            ):
-                return UserProfile(
-                    id=current_user.id,
-                    email=current_user.email,
-                    name=current_user.name,
-                    role=current_user.role,
-                    department=current_user.department
-                )
-
-            @router.post("/logout")
-            async def logout():
-                return {"message": "Successfully logged out"}
-
-            @router.post("/refresh", response_model=Token)
-            async def refresh_token(current_user: User = Depends(get_current_user_legacy)):
-                access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-                access_token = create_access_token(
-                    data={"sub": current_user.email}, expires_delta=access_token_expires
-                )
-                return {"access_token": access_token, "token_type": "bearer"}
-
-            @router.get("/profile", response_model=dict)
-            async def get_profile(
-                current_user=Depends(get_current_user_legacy),
-                db: Session = Depends(get_db)
-            ):
-                """Get user profile information."""
-                return {"message": "Profile endpoint", "user_id": current_user.id}
-
+        @router.post("/refresh/legacy", response_model=Token)
+        async def refresh_token_legacy(current_user: User = Depends(get_current_user_legacy)):
+            access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+            access_token = create_access_token(
+                data={"sub": current_user.email}, expires_delta=access_token_expires
+            )
+            return {"access_token": access_token, "token_type": "bearer"}
 else:
+    # Fallback if FastAPI is not available
     router = None
-    logger.error("FastAPI not available - auth router not created")
-
-__all__ = ["router"]
