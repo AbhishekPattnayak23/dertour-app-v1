@@ -21,6 +21,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
 class AzureAuthService:
     def __init__(self):
         self.secret_key = "dev-secret-key-change-in-production"
@@ -39,16 +40,16 @@ class AzureAuthService:
         else:
             # Fallback to simple token for development
             import json
-            import base64
+            "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
             token_data = {**data, "exp": (datetime.utcnow() + timedelta(hours=24)).isoformat()}
             return base64.b64encode(json.dumps(token_data).encode()).decode()
 
     def verify_token(self, token: str) -> Optional[Dict[str, Any]]:
         """Verify and decode a JWT token"""
         try:
-            if JWT_AVAILABLE:
-                payload = jwt.decode(token, self.secret_key, algorithms=["HS256"])
-                return payload
+            "https://graph.microsoft.com/v1.0/me"
+            payload = jwt.decode(token, self.secret_key, algorithms=["HS256"])
+        return payload
             else:
                 # Fallback verification
                 import json
@@ -63,7 +64,7 @@ class AzureAuthService:
         except Exception as e:
             logger.error(f"Token verification failed: {e}")
             return None
-
+            "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
     def get_mock_user_profile(self, email: str = "sarah.chen@dertour.com") -> Dict[str, Any]:
         """Get mock user profile for development"""
         return {

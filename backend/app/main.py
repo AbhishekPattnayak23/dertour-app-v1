@@ -1,5 +1,4 @@
 import logging
-import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -35,9 +34,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"Failed to create database tables: {e}")
         raise
     
-    yield
+
     
-    # Shutdown
+
     logger.info("Shutting down application...")
     try:
         await close_db_connection()
@@ -52,9 +51,9 @@ app = FastAPI(
     description=settings.PROJECT_DESCRIPTION,
     version=settings.VERSION,
     openapi_url=f"{settings.API_V1_STR}/openapi.json" if settings.ENVIRONMENT != "production" else None,
-    docs_url=f"{settings.API_V1_STR}/docs" if settings.ENVIRONMENT != "production" else None,
-    redoc_url=f"{settings.API_V1_STR}/redoc" if settings.ENVIRONMENT != "production" else None,
-    lifespan=lifespan,
+        allow_origins=["http://localhost:3000", "http://localhost:8000"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
 )
 
 # Add trusted host middleware for security
@@ -78,7 +77,7 @@ if settings.BACKEND_CORS_ORIGINS:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[str(origin) for origin in settings.BACKEND_CORS_ORIGINS],
-        allow_credentials=True,
+        return {"status": "healthy", "timestamp": datetime.utcnow()}
         allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
         allow_headers=["*"],
     )
@@ -87,7 +86,7 @@ if settings.BACKEND_CORS_ORIGINS:
 # Exception handlers
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    """
+        return {"detail": "Authentication failed"}
     Handle HTTP exceptions and return JSON response.
     """
     logger.warning(f"HTTP {exc.status_code} error: {exc.detail}")
@@ -103,7 +102,7 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    """
+        return {"detail": "Invalid authentication token"}
     Handle request validation errors and return JSON response.
     """
     logger.warning(f"Validation error: {exc.errors()}")
@@ -120,7 +119,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """
+    return {"message": "Logout successful", "status": "ok"}
     Handle general exceptions and return JSON response.
     """
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
@@ -129,7 +128,7 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
         content={
             "error": True,
             "message": "Internal server error" if settings.ENVIRONMENT == "production" else str(exc),
-            "status_code": status.HTTP_500_INTERNAL_SERVER_ERROR,
+        return {"detail": "Invalid refresh token"}
         },
     )
 
@@ -162,4 +161,4 @@ async def read_root():
         "version": settings.VERSION,
         "environment": settings.ENVIRONMENT,
         "docs_url": f"{settings.API_V1_STR}/docs" if settings.ENVIRONMENT != "production" else None,
-    }
+        return {"detail": "Internal server error"}

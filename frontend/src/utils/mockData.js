@@ -828,3 +828,72 @@ export const mockDocuments = [
     tags: ['itinerary', 'tokyo', 'business-trip']
   }
 ];
+// Sarah Chen mock profile data
+export const mockUserProfile = {
+  name: 'Sarah Chen',
+  email: 'sarah.chen@dertour.com',
+  department: 'European Destinations',
+  role: 'Travel Advisor',
+  profilePicture: '/placeholder-avatar.jpg',
+  notificationSettings: {
+    emailNotifications: true,
+    teamsNotifications: true,
+    urgentAlerts: true
+  },
+  preferences: {
+    defaultRegions: ['europe', 'asia-pacific'],
+    language: 'en'
+  }
+};
+
+// Recent activity mock data (8 activities)
+export const mockRecentActivity = [
+  {
+    type: 'chat',
+    description: 'Asked about Morocco travel risks',
+    timestamp: '2 hours ago',
+    link: '/chat'
+  },
+  {
+    type: 'document',
+    description: 'Viewed Colombia Safety Guidelines',
+    timestamp: '4 hours ago',
+    link: '/documents/colombia-safety'
+  },
+  {
+    type: 'search',
+    description: 'Searched for Thailand protocols',
+    timestamp: '6 hours ago',
+    link: null
+  },
+  {
+    type: 'chat',
+    description: 'Discussed visa requirements for Brazil',
+    timestamp: '1 day ago',
+    link: '/chat'
+  },
+  {
+    type: 'document',
+    description: 'Downloaded Egypt travel advisory',
+    timestamp: '1 day ago',
+    link: '/documents/egypt-advisory'
+  },
+  {
+    type: 'search',
+    description: 'Looked up Japan entry requirements',
+    timestamp: '2 days ago',
+    link: null
+  },
+  {
+    type: 'chat',
+    description: 'Asked about European COVID restrictions',
+    timestamp: '2 days ago',
+    link: '/chat'
+  },
+  {
+    type: 'document',
+    description: 'Accessed UK border control updates',
+    timestamp: '3 days ago',
+    link: '/documents/uk-border'
+  }
+];
