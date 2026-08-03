@@ -1,129 +1,208 @@
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import JWTError, jwt
-from passlib.context import CryptContext
-from sqlalchemy.orm import Session
-import os
+"""
+Authentication endpoints for Azure AD OAuth2 integration.
+Provides login, logout, token refresh, and user info endpoints.
+"""
 import logging
-
-from app.core.database import get_db
-from app.models.user import User
-from app.schemas.auth import Token, UserProfile, LoginRequest
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
-security = HTTPBearer(auto_error=False)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+try:
+    from fastapi import APIRouter, Depends, HTTPException, Request, status
+    from fastapi.responses import JSONResponse, RedirectResponse
+    from pydantic import BaseModel, Field
+    FASTAPI_AVAILABLE = True
+except ImportError:
+    FASTAPI_AVAILABLE = False
+    logger.error("FastAPI not available - auth endpoints cannot be created")
 
-# JWT Configuration
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+from backend.app.services.azure.auth_service import (
+    AzureAuthService,
+    AuthenticationError,
+    TokenValidationError,
+    auth_service,
+)
+from backend.app.core.security import (
+    validate_token,
+    extract_user_from_token,
+    get_current_user,
+)
 
+if FASTAPI_AVAILABLE:
+    router = APIRouter(prefix="/auth", tags=["authentication"])
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    # -------------------------------------------------------
+    # Request/Response Models
+    # -------------------------------------------------------
 
+    class LoginRequest(BaseModel):
+        """Login request body."""
+        username: str = Field(..., description="User's email or username")
+        password: str = Field(..., description="User's password")
 
-def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    class LoginResponse(BaseModel):
+        """Login response with tokens."""
+        access_token: str = Field(..., description="JWT access token")
+        refresh_token: Optional[str] = Field(None, description="Refresh token")
+        id_token: Optional[str] = Field(None, description="ID token")
+        token_type: str = Field(default="Bearer", description="Token type")
+        expires_in: int = Field(default=3600, description="Token expiry in seconds")
+        user: Optional[Dict[str, Any]] = Field(None, description="User information")
 
+    class RefreshRequest(BaseModel):
+        """Token refresh request body."""
+        refresh_token: str = Field(..., description="Refresh token to exchange")
 
-def create_access_token(data: Dict[str, Any],
-                       expires_delta: Optional[timedelta] = None) -> str:
-                    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    class LogoutRequest(BaseModel):
+        """Logout request body."""
+        username: Optional[str] = Field(None, description="Username to log out")
 
+    class TokenValidationRequest(BaseModel):
+        """Token validation request body."""
+        token: str = Field(..., description="Token to validate")
 
-def get_user_by_email(db: Session, email: str) -> Optional[User]:
-    return db.query(User).filter(User.email == email).first()
+    # -------------------------------------------------------
+    # Endpoints
+    # -------------------------------------------------------
 
+    @router.post("/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
+    async def login(request: LoginRequest) -> LoginResponse:
+        """
+        Authenticate user with username and password via Azure AD.
 
-def authenticate_user(db: Session, email: str,
-                     password: str) -> Optional[User]:
-                  user = get_user_by_email(db, email)
-    if not user:
-        return None
-    if not verify_password(password, user.hashed_password):
-        return None
-    return user
+        Returns access token, refresh token, and user information.
+        """
+        logger.info(f"Login attempt for user: {request.username}")
+        try:
+            result = auth_service.login(
+                username=request.username,
+                password=request.password,
+            )
 
+            user_info = None
+            if result.get("access_token"):
+                try:
+                    user_info = extract_user_from_token(result["access_token"])
+                except Exception:
+                    user_info = result.get("account", {})
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db)
-) -> User:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+            return LoginResponse(
+                access_token=result["access_token"],
+                refresh_token=result.get("refresh_token"),
+                id_token=result.get("id_token"),
+                token_type=result.get("token_type", "Bearer"),
+                expires_in=result.get("expires_in", 3600),
+                user=user_info,
+            )
+        except AuthenticationError as e:
+            logger.warning(f"Login failed for {request.username}: {e.message}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=e.message,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        except Exception as e:
+            logger.error(f"Unexpected login error: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Internal authentication error",
+            )
 
-    if not credentials:
-        raise credentials_exception
+    @router.post("/authenticate", response_model=LoginResponse, status_code=status.HTTP_200_OK)
+    async def authenticate(request: LoginRequest) -> LoginResponse:
+        """
+        Authenticate user - alias for /login endpoint.
+        """
+        return await login(request)
 
-    try:
-        payload = jwt.decode(credentials.credentials, SECRET_KEY,
-                          algorithms=[ALGORITHM])
-                           email: str = payload.get("sub")
-        if email is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
+    @router.post("/logout", status_code=status.HTTP_200_OK)
+    async def logout(
+        request: Optional[LogoutRequest] = None,
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ) -> Dict[str, Any]:
+        """
+        Logout the current user and invalidate their session.
+        """
+        username = current_user.get("username", "")
+        logger.info(f"Logout request for user: {username}")
 
-    user = get_user_by_email(db, email=email)
-    if user is None:
-        raise credentials_exception
-    return user
+        try:
+            account = {"username": username} if username else None
+            result = auth_service.logout(account=account)
+            return {"message": "Successfully logged out", "status": "success"}
+        except Exception as e:
+            logger.error(f"Logout error: {str(e)}")
+            return {"message": "Logout completed", "status": "success"}
 
+    @router.post("/refresh", response_model=LoginResponse, status_code=status.HTTP_200_OK)
+    async def refresh(request: RefreshRequest) -> LoginResponse:
+        """
+        Refresh access token using a valid refresh token.
+        """
+        logger.info("Token refresh request received")
+        try:
+            result = auth_service.refresh_token(
+                refresh_token_value=request.refresh_token
+            )
 
-@router.post("/login", response_model=Token)
-async def login(login_data: LoginRequest, db: Session = Depends(get_db)):
-    user = authenticate_user(db, login_data.email, login_data.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
+            user_info = None
+            if result.get("access_token"):
+                try:
+                    user_info = extract_user_from_token(result["access_token"])
+                except Exception:
+                    user_info = result.get("account", {})
 
+            return LoginResponse(
+                access_token=result["access_token"],
+                refresh_token=result.get("refresh_token"),
+                id_token=result.get("id_token"),
+                token_type=result.get("token_type", "Bearer"),
+                expires_in=result.get("expires_in", 3600),
+                user=user_info,
+            )
+        except AuthenticationError as e:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=e.message,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        except Exception as e:
+            logger.error(f"Token refresh error: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Token refresh failed",
+            )
 
-@router.get("/me", response_model=UserProfile)
-async def get_current_user_profile(
-    current_user: User = Depends(get_current_user)
-):
-    return UserProfile(
-        id=current_user.id,
-        email=current_user.email,
-        name=current_user.name,
-        role=current_user.role,
-        department=current_user.department
-    )
+    @router.get("/me", status_code=status.HTTP_200_OK)
+    async def get_me(
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ) -> Dict[str, Any]:
+        """
+        Get current authenticated user's information.
+        """
+        return current_user
 
+    @router.post("/validate", status_code=status.HTTP_200_OK)
+    async def validate(request: TokenValidationRequest) -> Dict[str, Any]:
+        """
+        Validate a JWT token and return its claims.
+        """
+        try:
+            claims = validate_token(request.token)
+            return {"valid": True, "claims": claims}
+        except TokenValidationError as e:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=str(e),
+            )
 
-@router.post("/logout")
-async def logout():
-    return {"message": "Successfully logged out"}
+    @router.get("/health", status_code=status.HTTP_200_OK)
+    async def health_check() -> Dict[str, Any]:
+        """Health check endpoint for the auth service."""
+        return {"status": "healthy", "service": "azure-auth"}
 
+else:
+    router = None
+    logger.error("FastAPI not available - auth router not created")
 
-@router.post("/refresh", response_model=Token)
-async def refresh_token(current_user: User = Depends(get_current_user)):
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": current_user.email}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
+__all__ = ["router"]
