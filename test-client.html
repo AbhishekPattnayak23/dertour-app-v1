@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Chat API Test Client</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .messages { height: 400px; overflow-y: scroll; border: 1px solid #ccc; padding: 10px; margin: 10px 0; }
+        .message { margin: 5px 0; padding: 5px; }
+        .user-message { background-color: #e3f2fd; }
+        .ai-message { background-color: #f3e5f5; }
+        input, button { padding: 8px; margin: 5px; }
+        #messageInput { width: 300px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Real-time Chat API Test</h1>
+        <div>
+            <input type="text" id="tokenInput" placeholder="Enter auth token" value="test-user-123">
+            <button onclick="createChat()">Create Chat</button>
+            <button onclick="connectToChat()">Connect to Stream</button>
+        </div>
+        <div>
+            <input type="text" id="chatIdInput" placeholder="Chat ID">
+            <input type="text" id="messageInput" placeholder="Type message...">
+            <button onclick="sendMessage()">Send Message</button>
+        </div>
+        <div id="messages" class="messages"></div>
+        <div id="status"></div>
+    </div>
+
+    <script>
+        let eventSource = null;
+        let currentChatId = null;
+        let authToken = 'test-user-123';
+
+        function updateStatus(message) {
+            document.getElementById('status').innerHTML = message;
+        }
+
+        function addMessage(message, type = 'system') {
+            const messagesDiv = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}-message`;
+            messageDiv.innerHTML = `<strong>${type}:</strong> ${message}`;
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        async function createChat() {
+            const token = document.getElementById('tokenInput').value;
+            try {
+                const response = await fetch('/api/chats', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ title: 'Test Chat' })
+                });
+                const data = await response.json();
+                if (data.success) {
+                    document.getElementById('chatIdInput').value = data.chat.id;
+                    currentChatId = data.chat.id;
+                    authToken = token;
+                    updateStatus(`Chat created: ${data.chat.id}`);
+                    addMessage(`Chat created with ID: ${data.chat.id}`, 'system');
+                }
+            } catch (error) {
+                updateStatus(`Error: ${error.message}`);
+            }
+        }
+
+        function connectToChat() {
+            const chatId = document.getElementById('chatIdInput').value;
+            const token = document.getElementById('tokenInput').value;
+
+            if (!chatId) {
+                updateStatus('Please enter a chat ID');
+                return;
+            }
+
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            eventSource = new EventSource(`/api/chats/${chatId}/stream`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+
+            eventSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+
+                switch(data.type) {
+                    case 'connection_established':
+                        updateStatus('Connected to chat stream');
+                        addMessage('Connected to real-time stream', 'system');
+                        break;
+                    case 'user_message':
+                        addMessage(data.message.content, 'user');
+                        break;
+                    case 'ai_response_chunk':
+                        updateAIMessage(data.message.content);
+                        break;
+                    case 'ai_response_complete':
+                        finalizeAIMessage(data.message.content);
+                        break;
+                    case 'heartbeat':
+                        // Silent heartbeat
+                        break;
+                }
+            };
+
+            eventSource.onerror = function(event) {
+                updateStatus('Stream connection error');
+                addMessage('Stream connection lost', 'system');
+            };
+
+            currentChatId = chatId;
+            authToken = token;
+        }
+
+        let currentAIMessageDiv = null;
+
+        function updateAIMessage(content) {
+            if (!currentAIMessageDiv) {
+                const messagesDiv = document.getElementById('messages');
+                currentAIMessageDiv = document.createElement('div');
+                currentAIMessageDiv.className = 'message ai-message';
+                messagesDiv.appendChild(currentAIMessageDiv);
+            }
+            currentAIMessageDiv.innerHTML = `<strong>ai:</strong> ${content}<span class="cursor">|</span>`;
+            document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+        }
+
+        function finalizeAIMessage(content) {
+            if (currentAIMessageDiv) {
+                currentAIMessageDiv.innerHTML = `<strong>ai:</strong> ${content}`;
+                currentAIMessageDiv = null;
+            }
+        }
+
+        async function sendMessage() {
+            const message = document.getElementById('messageInput').value;
+            if (!message || !currentChatId) {
+                updateStatus('Please enter a message and connect to a chat');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/chats/${currentChatId}/messages`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${authToken}`
+                    },
+                    body: JSON.stringify({ message })
+                });
+
+                if (response.ok) {
+                    document.getElementById('messageInput').value = '';
+                    updateStatus('Message sent');
+                }
+            } catch (error) {
+                updateStatus(`Error sending message: ${error.message}`);
+            }
+        }
+
+        // Allow Enter key to send messages
+        document.getElementById('messageInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+    </script>
+</body>
+</html>
