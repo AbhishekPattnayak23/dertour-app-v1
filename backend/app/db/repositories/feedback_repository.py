@@ -6,8 +6,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, desc, func
 from datetime import datetime
 import logging
+from uuid import UUID, uuid4
+from azure.cosmos.aio import ContainerProxy
 
 from ..models.feedback import Feedback
+from app.schemas.feedback import FeedbackCreate, FeedbackResponse
 
 logger = logging.getLogger(__name__)
 
@@ -15,13 +18,15 @@ logger = logging.getLogger(__name__)
 class FeedbackRepository:
     """Repository class for feedback data access operations."""
 
-    def __init__(self, db_session: Session):
+    def __init__(self, db_session: Session = None, container: ContainerProxy = None):
         """Initialize the feedback repository.
 
         Args:
             db_session: SQLAlchemy database session
+            container: Cosmos DB container proxy
         """
         self.db = db_session
+        self.container = container
 
     def create_feedback(self, feedback_data: Dict[str, Any]) -> Feedback:
         """Create a new feedback entry.
@@ -47,6 +52,20 @@ class FeedbackRepository:
             logger.error(f"Failed to create feedback: {str(e)}")
             raise
 
+    async def create_feedback_async(self, feedback: FeedbackCreate, user_id: UUID) -> FeedbackResponse:
+        """Create new feedback entry in Cosmos DB."""
+        feedback_item = {
+            "id": str(uuid4()),
+            "user_id": str(user_id),
+            "rating": feedback.rating,
+            "comment": feedback.comment,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+
+        created_item = await self.container.create_item(feedback_item)
+        return FeedbackResponse(**created_item)
+
     def get_feedback_by_id(self, feedback_id: int) -> Optional[Feedback]:
         """Get feedback by ID.
 
@@ -65,6 +84,14 @@ class FeedbackRepository:
             return feedback
         except Exception as e:
             logger.error(f"Failed to get feedback {feedback_id}: {str(e)}")
+            return None
+
+    async def get_feedback_by_id_async(self, feedback_id: str) -> Optional[FeedbackResponse]:
+        """Get feedback by ID from Cosmos DB."""
+        try:
+            item = await self.container.read_item(item=feedback_id, partition_key=feedback_id)
+            return FeedbackResponse(**item)
+        except Exception:
             return None
 
     def get_feedbacks_by_user(self, user_id: int,
@@ -91,6 +118,21 @@ class FeedbackRepository:
             logger.error(f"Failed to get feedbacks for user {user_id}: "
                          f"{str(e)}")
             return []
+
+    async def get_user_feedback(self, user_id: UUID, limit: int = 50) -> List[FeedbackResponse]:
+        """Get feedback by user ID from Cosmos DB."""
+        query = "SELECT * FROM c WHERE c.user_id = @user_id ORDER BY c.created_at DESC"
+        parameters = [{"name": "@user_id", "value": str(user_id)}]
+
+        items = []
+        async for item in self.container.query_items(
+            query=query,
+            parameters=parameters,
+            max_item_count=limit
+        ):
+            items.append(FeedbackResponse(**item))
+
+        return items
 
     def get_feedbacks_by_query(self, query_id: int,
         limit: int = 100) -> List[Feedback]:
@@ -185,13 +227,6 @@ class FeedbackRepository:
             raise
 
     def delete_feedback(self, feedback_id: int) -> bool:
-
-        pass  # TODO: Implement    def list(self, limit: int = 100, offset: int = 0):
-        """List feedback entries with pagination"""
-        try:
-            return self.db.query(Feedback).offset(offset).limit(limit).all()
-        except Exception as e:
-            raise Exception(f"Error listing feedback: {str(e)}")
         """Delete a feedback by ID.
 
         Args:
@@ -225,6 +260,13 @@ class FeedbackRepository:
             logger.error(f"Failed to delete feedback {feedback_id}: "
                         f"{str(e)}")
             raise
+
+    def list(self, limit: int = 100, offset: int = 0):
+        """List feedback entries with pagination"""
+        try:
+            return self.db.query(Feedback).offset(offset).limit(limit).all()
+        except Exception as e:
+            raise Exception(f"Error listing feedback: {str(e)}")
 
     def get_feedback_statistics(self) -> Dict[str, Any]:
         """Get feedback statistics.
@@ -312,10 +354,13 @@ class FeedbackRepository:
     def get_feedbacks_by_date_range(self, start_date: datetime,
                                         end_date: datetime,
                                         skip: int = 0, limit: int = 100) -> List[Feedback]:
+        """Get feedbacks within a date range.
 
-        pass  # TODO: Implement
-        start_date: Start date for the range
+        Args:
+            start_date: Start date for the range
             end_date: End date for the range
+            skip: Number of records to skip
+            limit: Maximum number of records to return
 
         Returns:
             List[Feedback]: List of feedback objects within date range
@@ -325,14 +370,14 @@ class FeedbackRepository:
                 self.db.query(Feedback)
                 .filter(and_(
                     Feedback.created_at >= start_date,
-                        Feedback.created_at <= end_date
+                    Feedback.created_at <= end_date
                 ))
                 .order_by(desc(Feedback.created_at))
+                .offset(skip)
+                .limit(limit)
                 .all()
             )
             return feedbacks
         except Exception as e:
-            logger.error(f"Failed to get feedbacks by date range: "
-                        f"{str(e)}")
-    """
+            logger.error(f"Failed to get feedbacks by date range: {str(e)}")
             return []

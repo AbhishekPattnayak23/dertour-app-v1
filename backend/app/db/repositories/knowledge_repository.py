@@ -1,11 +1,14 @@
 from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 import uuid
+from uuid import UUID, uuid4
 from sqlalchemy import text, and_, or_, func, desc, asc
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 import numpy as np
+from azure.cosmos.aio import ContainerProxy
 from app.db.models.knowledge import Document, DocumentChunk, DocumentMetadata, KnowledgeBase
+from app.schemas.knowledge import KnowledgeDocumentCreate, KnowledgeDocumentResponse
 from app.core.exceptions import DatabaseError
 from app.core.logging import get_logger
 
@@ -154,9 +157,11 @@ class DocumentRepository:
 class KnowledgeRepository:
     """Repository for knowledge base and vector search operations"""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session = None, container: ContainerProxy = None):
         self.db = db
-        self.document_repo = DocumentRepository(db)
+        self.container = container
+        if db:
+            self.document_repo = DocumentRepository(db)
 
     def create_knowledge_base(
         self,
@@ -286,172 +291,51 @@ class KnowledgeRepository:
             results.sort(key=lambda x: x[1], reverse=True)
             return results[:limit]
 
-        except Exception as e:
+        except SQLAlchemyError as e:
             logger.error(f"Error performing vector search: {str(e)}")
             raise DatabaseError(f"Failed to perform vector search: {str(e)}")
 
-    def vector_search_with_metadata_filter(
-        self,
-        knowledge_base_id: str,
-        query_embedding: List[float],
-        metadata_filters: Dict[str, Any],
-        limit: int = 10,
-        similarity_threshold: float = 0.7
-    ) -> List[Tuple[DocumentChunk, float]]:
-        """Perform vector search with metadata filtering"""
+    async def create_document(self, document: KnowledgeDocumentCreate) -> KnowledgeDocumentResponse:
+        """Create new knowledge document."""
+        doc_item = {
+            "id": str(uuid4()),
+            "title": document.title,
+            "content": document.content,
+            "category": document.category,
+            "tags": document.tags or [],
+            "embedding": document.embedding or [],
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+
+        created_item = await self.container.create_item(doc_item)
+        return KnowledgeDocumentResponse(**created_item)
+
+    async def get_document_by_id(self, doc_id: str) -> Optional[KnowledgeDocumentResponse]:
+        """Get document by ID."""
         try:
-            query_vector = np.array(query_embedding)
+            item = await self.container.read_item(item=doc_id, partition_key=doc_id)
+            return KnowledgeDocumentResponse(**item)
+        except Exception:
+            return None
 
-            # Build base query
-            query = (
-                self.db.query(DocumentChunk)
-                .join(Document)
-                .filter(Document.knowledge_base_id == knowledge_base_id)
-            )
+    async def search_documents(self, query: str, category: Optional[str] = None, limit: int = 10) -> List[KnowledgeDocumentResponse]:
+        """Search documents by query."""
+        sql_query = "SELECT * FROM c WHERE CONTAINS(LOWER(c.content), LOWER(@query)) OR CONTAINS(LOWER(c.title), LOWER(@query))"
+        parameters = [{"name": "@query", "value": query}]
 
-            # Apply metadata filters
-            for key, value in metadata_filters.items():
-                query = query.filter(
-                    DocumentChunk.metadata[key].astext == str(value)
-                )
+        if category:
+            sql_query += " AND c.category = @category"
+            parameters.append({"name": "@category", "value": category})
 
-            chunks = query.all()
+        sql_query += " ORDER BY c.created_at DESC"
 
-            # Calculate similarities
-            results = []
-            for chunk in chunks:
-                if chunk.embedding:
-                    chunk_vector = np.array(chunk.embedding)
-                    similarity = np.dot(query_vector, chunk_vector) / (
-                        np.linalg.norm(query_vector) * np.linalg.norm(chunk_vector)
-                    )
+        items = []
+        async for item in self.container.query_items(
+            query=sql_query,
+            parameters=parameters,
+            max_item_count=limit
+        ):
+            items.append(KnowledgeDocumentResponse(**item))
 
-                    if similarity >= similarity_threshold:
-                        results.append((chunk, float(similarity)))
-
-            results.sort(key=lambda x: x[1], reverse=True)
-            return results[:limit]
-
-        except Exception as e:
-            logger.error(f"Error performing filtered vector search: {str(e)}")
-            raise DatabaseError(f"Failed to perform filtered vector search: {str(e)}")
-
-    def update_chunk_embedding(
-        self,
-        chunk_id: str,
-        embedding: List[float]
-    ) -> Optional[DocumentChunk]:
-        """Update chunk embedding"""
-        try:
-            chunk = self.db.query(DocumentChunk).filter(
-                DocumentChunk.id == chunk_id
-            ).first()
-
-            if chunk:
-                chunk.embedding = embedding
-                self.db.flush()
-
-            return chunk
-        except SQLAlchemyError as e:
-            logger.error(f"Error updating chunk embedding {chunk_id}: {str(e)}")
-            raise DatabaseError(f"Failed to update chunk embedding: {str(e)}")
-
-    def delete_document_chunks(self, document_id: str) -> int:
-        pass
-
-    def list(self, limit: int = 100, offset: int = 0):
-        """List knowledge documents with pagination"""
-        try:
-            return self.db.query(dict).offset(offset).limit(limit).all()
-        except Exception as e:
-            raise Exception(f"Error listing knowledge documents: {str(e)}")
-        """Delete all chunks for a document"""
-        try:
-            deleted_count = self.db.query(DocumentChunk).filter(
-                DocumentChunk.document_id == document_id
-            ).delete()
-
-            return deleted_count
-        except SQLAlchemyError as e:
-            logger.error(f"Error deleting chunks for document {document_id}: {str(e)}")
-            raise DatabaseError(f"Failed to delete document chunks: {str(e)}")
-
-    def get_knowledge_base_stats(self, kb_id: str) -> Dict[str, Any]:
-        """Get statistics for a knowledge base"""
-        try:
-            document_count = (
-                self.db.query(func.count(Document.id))
-                .filter(Document.knowledge_base_id == kb_id)
-                .scalar()
-            )
-
-            chunk_count = (
-                self.db.query(func.count(DocumentChunk.id))
-                .join(Document)
-                .filter(Document.knowledge_base_id == kb_id)
-                .scalar()
-            )
-
-            total_size = (
-                self.db.query(func.sum(Document.file_size))
-                .filter(Document.knowledge_base_id == kb_id)
-                .scalar() or 0
-            )
-
-            return {
-                "document_count": document_count,
-                "chunk_count": chunk_count,
-                "total_size_bytes": total_size
-            }
-        except SQLAlchemyError as e:
-            logger.error(f"Error getting KB stats {kb_id}: {str(e)}")
-            raise DatabaseError(f"Failed to get knowledge base stats: {str(e)}")
-
-    def create_metadata_index(
-        self,
-        document_id: str,
-        key: str,
-        value: str,
-        metadata_type: str = "string"
-    ) -> DocumentMetadata:
-        """Create metadata index entry"""
-        try:
-            metadata = DocumentMetadata(
-                id=str(uuid.uuid4()),
-                document_id=document_id,
-                key=key,
-                value=value,
-                metadata_type=metadata_type,
-                created_at=datetime.utcnow()
-            )
-
-            self.db.add(metadata)
-            self.db.flush()
-            return metadata
-        except SQLAlchemyError as e:
-            logger.error(f"Error creating metadata index: {str(e)}")
-            raise DatabaseError(f"Failed to create metadata index: {str(e)}")
-
-    def search_by_metadata(
-        self,
-        knowledge_base_id: str,
-        metadata_filters: Dict[str, Any],
-        skip: int = 0,
-        limit: int = 100
-    ) -> List[Document]:
-        """Search documents by metadata"""
-        try:
-            query = (
-                self.db.query(Document)
-                .filter(Document.knowledge_base_id == knowledge_base_id)
-            )
-
-            for key, value in metadata_filters.items():
-                query = query.filter(
-                    Document.metadata[key].astext == str(value)
-                )
-
-            return query.offset(skip).limit(limit).all()
-        except SQLAlchemyError as e:
-            logger.error(f"Error searching by metadata: {str(e)}")
-            raise DatabaseError(f"Failed to search by metadata: {str(e)}")
+        return items
