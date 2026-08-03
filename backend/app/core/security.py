@@ -6,7 +6,6 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Request
 from jose import JWTError, jwt
 from msal import ConfidentialClientApplication
-from datetime import datetime, timezone
 from ..config.settings import settings
 
 
@@ -20,7 +19,7 @@ class AzureADAuth:
         self.app = ConfidentialClientApplication(
             settings.AZURE_AD_CLIENT_ID,
             authority=f"https://login.microsoftonline.com/"
-                     f"{settings.AZURE_AD_TENANT_ID}",
+                      f"{settings.AZURE_AD_TENANT_ID}",
             client_credential=settings.AZURE_AD_CLIENT_SECRET,
         )
 

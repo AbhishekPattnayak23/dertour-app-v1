@@ -1,4 +1,3 @@
-from app.services.azure.auth_service import AzureAuthService
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -35,7 +34,7 @@ def get_password_hash(password: str) -> str:
 
 def create_access_token(data: Dict[str, Any],
                        expires_delta: Optional[timedelta] = None) -> str:
-    to_encode = data.copy()
+                    to_encode = data.copy()
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
@@ -51,7 +50,7 @@ def get_user_by_email(db: Session, email: str) -> Optional[User]:
 
 def authenticate_user(db: Session, email: str,
                      password: str) -> Optional[User]:
-    user = get_user_by_email(db, email)
+                  user = get_user_by_email(db, email)
     if not user:
         return None
     if not verify_password(password, user.hashed_password):
@@ -75,7 +74,7 @@ async def get_current_user(
     try:
         payload = jwt.decode(credentials.credentials, SECRET_KEY,
                           algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
+                           email: str = payload.get("sub")
         if email is None:
             raise credentials_exception
     except JWTError:
