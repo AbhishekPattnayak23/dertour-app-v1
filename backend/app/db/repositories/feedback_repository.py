@@ -186,7 +186,7 @@ class FeedbackRepository:
 
     def delete_feedback(self, feedback_id: int) -> bool:
 
-    def list(self, limit: int = 100, offset: int = 0):
+        pass  # TODO: Implement    def list(self, limit: int = 100, offset: int = 0):
         """List feedback entries with pagination"""
         try:
             return self.db.query(Feedback).offset(offset).limit(limit).all()
@@ -313,8 +313,8 @@ class FeedbackRepository:
                                         end_date: datetime,
                                         skip: int = 0, limit: int = 100) -> List[Feedback]:
 
-        Args:
-            start_date: Start date for the range
+        pass  # TODO: Implement
+        start_date: Start date for the range
             end_date: End date for the range
 
         Returns:
@@ -334,4 +334,5 @@ class FeedbackRepository:
         except Exception as e:
             logger.error(f"Failed to get feedbacks by date range: "
                         f"{str(e)}")
+    """
             return []

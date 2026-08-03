@@ -21,6 +21,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
 class AzureAuthService:
     def __init__(self):
         self.secret_key = "dev-secret-key-change-in-production"
