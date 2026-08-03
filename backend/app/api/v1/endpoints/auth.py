@@ -1,4 +1,3 @@
-from app.services.azure.auth_service import AzureAuthService
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -34,7 +33,7 @@ def get_password_hash(password: str) -> str:
 
 
 def create_access_token(data: Dict[str, Any],
-                       expires_delta: Optional[timedelta] = None) -> str:
+                        expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
@@ -50,7 +49,7 @@ def get_user_by_email(db: Session, email: str) -> Optional[User]:
 
 
 def authenticate_user(db: Session, email: str,
-                     password: str) -> Optional[User]:
+    password: str) -> Optional[User]:
     user = get_user_by_email(db, email)
     if not user:
         return None
@@ -74,7 +73,7 @@ async def get_current_user(
 
     try:
         payload = jwt.decode(credentials.credentials, SECRET_KEY,
-                          algorithms=[ALGORITHM])
+    algorithms=[ALGORITHM])
         email: str = payload.get("sub")
         if email is None:
             raise credentials_exception
@@ -128,3 +127,11 @@ async def refresh_token(current_user: User = Depends(get_current_user)):
         data={"sub": current_user.email}, expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer"}
+
+@router.get("/profile", response_model=dict)
+async def get_profile(
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get user profile information."""
+    return {"message": "Profile endpoint", "user_id": current_user.id}

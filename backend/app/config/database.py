@@ -1,7 +1,7 @@
 """Database configuration and connection management for Azure SQL and Cosmos DB."""
 
 from sqlalchemy import (
-    create_engine, MetaData, Table, Column,
+    MetaData, Table, Column,
     Integer, String, DateTime, Boolean, Text
 )
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
