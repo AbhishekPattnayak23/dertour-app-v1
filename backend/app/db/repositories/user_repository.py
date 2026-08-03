@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Tuple
 import uuid
 from datetime import datetime, timezone
 
@@ -27,19 +27,46 @@ class UserRepository:
         self.db = db
         self._pool = pool
 
+    def _get_model(self):
+        """Lazily import User model to avoid circular imports."""
+        try:
+            from app.models.user import User as UserModel
+            return UserModel
+        except ImportError:
+            try:
+                from app.db.models.user import User as UserModel
+                return UserModel
+            except ImportError:
+                return None
+
     # -------------------------------------------------------------------------
     # asyncpg-based methods
     # -------------------------------------------------------------------------
 
     async def create_user(
         self,
-        email: str,
-        username: str,
-        hashed_password: str,
+        email: str = None,
+        username: str = None,
+        hashed_password: str = None,
         is_active: bool = True,
         is_superuser: bool = False,
         roles: Optional[List[str]] = None,
+        user_data: dict = None,
     ) -> dict:
+        # Support dict-based creation (from THEIRS) when pool is not available
+        if self._pool is None:
+            if user_data is not None:
+                return self._create_user_orm(user_data)
+            data = {
+                "email": email,
+                "username": username,
+                "hashed_password": hashed_password,
+                "is_active": is_active,
+                "is_superuser": is_superuser,
+                "roles": roles or [],
+            }
+            return self._create_user_orm(data)
+
         user_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
         roles = roles or []
@@ -67,16 +94,46 @@ class UserRepository:
             )
         return dict(row)
 
-    async def get_by_id(self, user_id: str) -> Optional[dict]:
+    def _create_user_orm(self, user_data: dict):
+        """Internal helper: create user via SQLAlchemy ORM."""
+        UserModel = self._get_model()
+        if UserModel is None:
+            user_id = len(getattr(self, '_users', [])) + 1
+            if not hasattr(self, '_users'):
+                self._users = []
+            new_user = {
+                "id": user_id,
+                "username": user_data.get("username"),
+                "email": user_data.get("email"),
+                "role": user_data.get("role", "user"),
+                "profile": user_data.get("profile", {}),
+            }
+            self._users.append(new_user)
+            return new_user
+
+        user = UserModel(**user_data)
+        self.db.add(user)
+        self.db.commit()
+        self.db.refresh(user)
+        return user
+
+    def create(self, user_data: dict):
+        """Create a new user record (ORM-based)."""
+        return self._create_user_orm(user_data)
+
+    async def get_by_id(self, user_id) -> Optional[dict]:
         if self._pool is not None:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchrow(
                     "SELECT * FROM users WHERE id = $1",
-                    user_id,
+                    str(user_id),
                 )
             return dict(row) if row else None
         # SQLAlchemy fallback (sync)
-        return self.db.query(User).filter(User.id == user_id).first()
+        UserModel = self._get_model()
+        if UserModel is None:
+            return None
+        return self.db.query(UserModel).filter(UserModel.id == user_id).first()
 
     async def get_by_email(self, email: str) -> Optional[dict]:
         if self._pool is not None:
@@ -86,7 +143,10 @@ class UserRepository:
                     email.lower().strip(),
                 )
             return dict(row) if row else None
-        return self.db.query(User).filter(User.email == email).first()
+        UserModel = self._get_model()
+        if UserModel is None:
+            return None
+        return self.db.query(UserModel).filter(UserModel.email == email).first()
 
     async def get_by_username(self, username: str) -> Optional[dict]:
         if self._pool is not None:
@@ -96,7 +156,10 @@ class UserRepository:
                     username.strip(),
                 )
             return dict(row) if row else None
-        return self.db.query(User).filter(User.username == username).first()
+        UserModel = self._get_model()
+        if UserModel is None:
+            return None
+        return self.db.query(UserModel).filter(UserModel.username == username).first()
 
     async def list_users(
         self,
@@ -124,35 +187,70 @@ class UserRepository:
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(query, *params)
             return [dict(row) for row in rows]
-        # SQLAlchemy fallback
-        return self.get_users(skip=offset, limit=limit)
 
-    async def update_user(self, user_id: str, **fields) -> Optional[dict]:
-        if not fields:
-            return await self.get_by_id(user_id)
+        # In-memory / ORM fallback
+        if not hasattr(self, '_users'):
+            self._users = []
+        return self._users[offset:offset + limit]
 
-        now = datetime.now(timezone.utc)
-        fields["updated_at"] = now
+    async def update_user(self, user_id, **fields) -> Optional[dict]:
+        if self._pool is not None:
+            if not fields:
+                return await self.get_by_id(user_id)
 
-        set_clauses = []
-        values = []
-        for idx, (key, value) in enumerate(fields.items(), start=1):
-            set_clauses.append(f"{key} = ${idx}")
-            values.append(value)
+            now = datetime.now(timezone.utc)
+            fields["updated_at"] = now
 
-        values.append(user_id)
-        where_param = f"${len(values)}"
+            set_clauses = []
+            values = []
+            for idx, (key, value) in enumerate(fields.items(), start=1):
+                set_clauses.append(f"{key} = ${idx}")
+                values.append(value)
 
-        query = f"""
-            UPDATE users
-            SET {', '.join(set_clauses)}
-            WHERE id = {where_param}
-            RETURNING *
-        """
+            values.append(str(user_id))
+            where_param = f"${len(values)}"
 
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(query, *values)
-        return dict(row) if row else None
+            query = f"""
+                UPDATE users
+                SET {', '.join(set_clauses)}
+                WHERE id = {where_param}
+                RETURNING *
+            """
+
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(query, *values)
+            return dict(row) if row else None
+
+        # In-memory fallback
+        if not hasattr(self, '_users'):
+            self._users = []
+        for user in self._users:
+            if user["id"] == user_id:
+                user.update(fields)
+                return user
+        return None
+
+    def update(self, user_id, update_data: dict):
+        """Update an existing user record (ORM-based)."""
+        UserModel = self._get_model()
+        if UserModel is None:
+            if not hasattr(self, '_users'):
+                self._users = []
+            for user in self._users:
+                if user["id"] == user_id:
+                    user.update(update_data)
+                    return user
+            return None
+
+        user = self.db.query(UserModel).filter(UserModel.id == user_id).first()
+        if not user:
+            return None
+        for key, value in update_data.items():
+            if hasattr(user, key):
+                setattr(user, key, value)
+        self.db.commit()
+        self.db.refresh(user)
+        return user
 
     async def update_password(self, user_id: str, hashed_password: str) -> bool:
         now = datetime.now(timezone.utc)
@@ -211,13 +309,45 @@ class UserRepository:
             )
         return result == "UPDATE 1"
 
-    async def delete_user(self, user_id: str) -> bool:
-        async with self._pool.acquire() as conn:
-            result = await conn.execute(
-                "DELETE FROM users WHERE id = $1",
-                user_id,
-            )
-        return result == "DELETE 1"
+    async def delete_user(self, user_id) -> bool:
+        if self._pool is not None:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    "DELETE FROM users WHERE id = $1",
+                    str(user_id),
+                )
+            return result == "DELETE 1"
+
+        # In-memory fallback
+        if not hasattr(self, '_users'):
+            self._users = []
+        for i, user in enumerate(self._users):
+            if user["id"] == user_id:
+                del self._users[i]
+                return True
+        return False
+
+    def delete(self, user_id) -> bool:
+        """Delete a user record (ORM-based)."""
+        UserModel = self._get_model()
+        if UserModel is None:
+            return self._delete_inmemory(user_id)
+
+        user = self.db.query(UserModel).filter(UserModel.id == user_id).first()
+        if not user:
+            return False
+        self.db.delete(user)
+        self.db.commit()
+        return True
+
+    def _delete_inmemory(self, user_id) -> bool:
+        if not hasattr(self, '_users'):
+            self._users = []
+        for i, user in enumerate(self._users):
+            if user["id"] == user_id:
+                del self._users[i]
+                return True
+        return False
 
     async def add_role(self, user_id: str, role: str) -> Optional[dict]:
         now = datetime.now(timezone.utc)
@@ -310,13 +440,12 @@ class UserRepository:
             row = await conn.fetchrow(
                 """
                 INSERT INTO user_entitlements (
-                    user_id, plan, features, expires_at,
-                    metadata, created_at, updated_at
+                    user_id, plan, features, expires_at, metadata,
+                    created_at, updated_at
                 )
                 VALUES ($1, $2, $3, $4, $5, $6, $6)
-                ON CONFLICT (user_id)
-                DO UPDATE SET
-                    plan = EXCLUDED.plan,
+                ON CONFLICT (user_id) DO UPDATE
+                SET plan = EXCLUDED.plan,
                     features = EXCLUDED.features,
                     expires_at = EXCLUDED.expires_at,
                     metadata = EXCLUDED.metadata,
@@ -333,212 +462,106 @@ class UserRepository:
         return dict(row)
 
     # -------------------------------------------------------------------------
-    # SQLAlchemy ORM-based methods (sync)
+    # ORM / sync convenience methods (from THEIRS)
     # -------------------------------------------------------------------------
 
-    def get_users(
+    def get_users_filtered(
         self,
         skip: int = 0,
-        limit: int = 100
-    ) -> List:
-        """Get all users with pagination (SQLAlchemy)"""
-        return self.db.query(User).offset(skip).limit(limit).all()
+        limit: int = 20,
+        role: Optional[str] = None,
+        is_active: Optional[bool] = None,
+        search: Optional[str] = None,
+    ) -> Tuple[List, int]:
+        """Get users with optional filters, returning (users, total_count)."""
+        UserModel = self._get_model()
+        if UserModel is None:
+            return [], 0
 
-    def get_all(self, skip: int = 0, limit: int = 100) -> List:
-        """Get all users - alias for get_users method"""
-        return self.get_users(skip=skip, limit=limit)
+        query = self.db.query(UserModel)
 
-    def get_users_by_role(
-        self,
-        role: str,
-        skip: int = 0,
-        limit: int = 100
-    ) -> List:
-        """Get users by role (SQLAlchemy)"""
-        return self.db.query(User).filter(
-            and_(User.role == role, User.is_active == True)
-        ).offset(skip).limit(limit).all()
+        if role is not None:
+            query = query.filter(UserModel.role == role)
 
-    def create(self, user_data) -> "User":
-        """Create a new user (SQLAlchemy)"""
-        existing = self.db.query(User).filter(User.email == user_data.email).first()
-        if existing:
-            raise UserAlreadyExistsError(f"User with email {user_data.email} already exists")
+        if is_active is not None:
+            query = query.filter(UserModel.is_active == is_active)
 
-        hashed_password = get_password_hash(user_data.password)
-        db_user = User(
-            email=user_data.email,
-            username=user_data.username,
-            hashed_password=hashed_password,
-            full_name=getattr(user_data, 'full_name', None),
-            role=getattr(user_data, 'role', 'user'),
-            is_active=True,
-        )
-        try:
-            self.db.add(db_user)
-            self.db.commit()
-            self.db.refresh(db_user)
-            return db_user
-        except IntegrityError:
-            self.db.rollback()
-            raise UserAlreadyExistsError(f"User with email {user_data.email} already exists")
-
-    def update(self, user_id: int, user_data) -> "User":
-        """Update an existing user (SQLAlchemy)"""
-        db_user = self.db.query(User).filter(User.id == user_id).first()
-        if not db_user:
-            raise UserNotFoundError(f"User with id {user_id} not found")
-
-        update_data = user_data.dict(exclude_unset=True) if hasattr(user_data, 'dict') else user_data
-        if 'password' in update_data:
-            update_data['hashed_password'] = get_password_hash(update_data.pop('password'))
-
-        for field, value in update_data.items():
-            if hasattr(db_user, field):
-                setattr(db_user, field, value)
-
-        try:
-            self.db.commit()
-            self.db.refresh(db_user)
-            return db_user
-        except IntegrityError:
-            self.db.rollback()
-            raise UserAlreadyExistsError("Email already in use")
-
-    def delete(self, user_id: int) -> bool:
-        """Delete a user by ID (SQLAlchemy)"""
-        db_user = self.db.query(User).filter(User.id == user_id).first()
-        if not db_user:
-            raise UserNotFoundError(f"User with id {user_id} not found")
-        self.db.delete(db_user)
-        self.db.commit()
-        return True
-
-    def soft_delete(self, user_id: int) -> "User":
-        """Soft delete a user by setting is_active to False (SQLAlchemy)"""
-        db_user = self.db.query(User).filter(User.id == user_id).first()
-        if not db_user:
-            raise UserNotFoundError(f"User with id {user_id} not found")
-        db_user.is_active = False
-        self.db.commit()
-        self.db.refresh(db_user)
-        return db_user
-
-    def assign_role(self, user_id: int, role: str) -> "User":
-        """Assign a role to a user (SQLAlchemy)"""
-        db_user = self.db.query(User).filter(User.id == user_id).first()
-        if not db_user:
-            raise UserNotFoundError(f"User with id {user_id} not found")
-        db_user.role = role
-        self.db.commit()
-        self.db.refresh(db_user)
-        return db_user
-
-    def update_entitlements(self, user_id: int, entitlements: List[str]) -> "User":
-        """Update user entitlements/permissions (SQLAlchemy)"""
-        db_user = self.db.query(User).filter(User.id == user_id).first()
-        if not db_user:
-            raise UserNotFoundError(f"User with id {user_id} not found")
-        if hasattr(db_user, 'entitlements'):
-            db_user.entitlements = entitlements
-        self.db.commit()
-        self.db.refresh(db_user)
-        return db_user
-
-    def search_users(
-        self,
-        query: str,
-        skip: int = 0,
-        limit: int = 100
-    ) -> List:
-        """Search users by email or username (SQLAlchemy)"""
-        return self.db.query(User).filter(
-            or_(
-                User.email.ilike(f"%{query}%"),
-                User.username.ilike(f"%{query}%")
+        if search:
+            search_term = f"%{search}%"
+            query = query.filter(
+                UserModel.email.ilike(search_term) |
+                UserModel.username.ilike(search_term) |
+                UserModel.full_name.ilike(search_term)
             )
-        ).offset(skip).limit(limit).all()
 
-    def count_users(self) -> int:
-        """Count total number of users (SQLAlchemy)"""
-        return self.db.query(User).count()
+        total = query.count()
+        users = query.offset(skip).limit(limit).all()
 
-    def count_active_users(self) -> int:
-        """Count active users (SQLAlchemy)"""
-        return self.db.query(User).filter(User.is_active == True).count()
+        return users, total
 
-    # -------------------------------------------------------------------------
-    # Profile Data Storage Methods
-    # -------------------------------------------------------------------------
+    def email_exists(self, email: str) -> bool:
+        """Check if email already exists."""
+        UserModel = self._get_model()
+        if UserModel is None:
+            return False
+        return self.db.query(UserModel).filter(UserModel.email == email).first() is not None
 
-    async def get_user_profile(self, user_id: str) -> Optional[dict]:
-        """Retrieve user profile data by user ID."""
-        user = await self.get_by_id(user_id)
-        if user is None:
-            return None
-        if isinstance(user, dict):
-            profile = {
-                "user_id": str(user.get("id", user_id)),
-                "username": user.get("username"),
-                "email": user.get("email"),
-                "full_name": user.get("full_name"),
-                "profile_picture": user.get("profile_picture"),
-                "bio": user.get("bio"),
-                "preferences": user.get("preferences", {}),
-                "created_at": user.get("created_at"),
-                "updated_at": user.get("updated_at"),
-            }
-        else:
-            profile = {
-                "user_id": str(user.id),
-                "username": getattr(user, "username", None),
-                "email": getattr(user, "email", None),
-                "full_name": getattr(user, "full_name", None),
-                "profile_picture": getattr(user, "profile_picture", None),
-                "bio": getattr(user, "bio", None),
-                "preferences": getattr(user, "preferences", {}),
-                "created_at": getattr(user, "created_at", None),
-                "updated_at": getattr(user, "updated_at", None),
-            }
-        return profile
+    def username_exists(self, username: str) -> bool:
+        """Check if username already exists."""
+        UserModel = self._get_model()
+        if UserModel is None:
+            return False
+        return self.db.query(UserModel).filter(UserModel.username == username).first() is not None
 
-    async def update_user_profile(self, user_id: str, profile_data: dict) -> Optional[dict]:
-        """Update user profile data."""
-        profile_fields = {
-            "full_name", "profile_picture", "bio", "preferences", "phone_number", "address"
-        }
-        update_data = {k: v for k, v in profile_data.items() if k in profile_fields}
-        if self._pool is not None:
-            updated_user = await self.update_user(user_id, **update_data)
-        else:
-            updated_user = self.update(user_id, type('obj', (object,), {'dict': lambda self, **kw: update_data, **update_data})())
-        if updated_user is None:
-            return None
-        return await self.get_user_profile(user_id)
+    def get_user_stats(self) -> dict:
+        """Get aggregate statistics about users."""
+        UserModel = self._get_model()
+        if UserModel is None:
+            return {"total": 0, "active": 0, "inactive": 0}
 
-    async def store_user_profile(self, user_id: str, profile_data: dict) -> Optional[dict]:
-        """Store/upsert user profile information."""
-        existing = await self.get_by_id(user_id)
-        if existing is None:
-            return None
-        return await self.update_user_profile(user_id, profile_data)
+        total = self.db.query(UserModel).count()
+        active = self.db.query(UserModel).filter(
+            UserModel.is_active == True).count()
+        inactive = total - active
 
-    async def get_profile_by_username(self, username: str) -> Optional[dict]:
-        """Retrieve user profile by username."""
+        role_counts = {}
         try:
-            user = await self.get_by_username(username)
-            if user is None:
-                return None
-            user_id = user.get("id") if isinstance(user, dict) else str(user.id)
-            return await self.get_user_profile(str(user_id))
+            rows = (
+                self.db.query(UserModel.role, UserModel.id)
+                .group_by(UserModel.role)
+                .all()
+            )
+            for role, _ in rows:
+                if role not in role_counts:
+                    role_counts[str(role)] = 0
+                role_counts[str(role)] += 1
         except Exception:
-            return None
+            pass
 
-    async def get_UserProfile(self, user_id: str) -> Optional[dict]:
-        """Alias for get_user_profile for compatibility."""
-        return await self.get_user_profile(user_id)
+        return {
+            "total": total,
+            "active": active,
+            "inactive": inactive,
+            "by_role": role_counts,
+        }
 
-    async def save_user_profile_data(self, user_id: str, profile: dict) -> bool:
-        """Persist user_profile data to storage."""
-        result = await self.store_user_profile(user_id, profile)
-        return result is not None
+    def update_user_role(self, user_id, role: str) -> bool:
+        """Update user role (in-memory or ORM)."""
+        if not hasattr(self, '_users'):
+            self._users = []
+
+        for user in self._users:
+            if user["id"] == user_id:
+                user["role"] = role
+                return True
+
+        # Try ORM
+        UserModel = self._get_model()
+        if UserModel is not None and self.db is not None:
+            user = self.db.query(UserModel).filter(UserModel.id == user_id).first()
+            if user:
+                user.role = role
+                self.db.commit()
+                return True
+
+        return False

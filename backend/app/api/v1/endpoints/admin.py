@@ -7,7 +7,9 @@ from datetime import datetime, timedelta
 from uuid import UUID
 
 from app.core.database import get_db
+from app.config.database import get_db as get_db_alt
 from app.core.auth import get_current_admin_user
+from app.core.security import get_current_user, require_admin
 from app.models.user import User
 from app.models.project import Project
 from app.models.task import Task
@@ -20,6 +22,8 @@ from app.schemas.admin import (
     AuditLogEntry
 )
 from app.crud.user import user_crud
+from app.db.repositories.user_repository import UserRepository
+from app.services.user_management import UserManagementService
 from app.core.dependencies import get_current_active_superuser
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -87,6 +91,38 @@ async def get_all_users(
     return users
 
 
+@router.get("/users-alt", response_model=dict)
+async def get_all_users_alt(
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    role: Optional[str] = Query(None),
+    is_active: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None),
+    db: Session = Depends(get_db_alt),
+    current_user: dict = Depends(get_current_user),
+    _: dict = Depends(require_admin),
+):
+    """Get all users with pagination and filtering."""
+    repo = UserRepository(db)
+    skip = (page - 1) * size
+
+    users, total = repo.get_users_filtered(
+        skip=skip,
+        limit=size,
+        role=role,
+        is_active=is_active,
+        search=search,
+    )
+
+    return {
+        "items": [u.to_dict() for u in users],
+        "total": total,
+        "page": page,
+        "size": size,
+        "pages": (total + size - 1) // size if size > 0 else 0,
+    }
+
+
 @router.post("/users", response_model=UserResponse,
              status_code=status.HTTP_201_CREATED)
 async def create_user(
@@ -116,6 +152,24 @@ async def create_user(
         )
 
 
+@router.post("/users-alt", response_model=dict, status_code=201)
+async def create_user_alt(
+    user_data: dict,
+    db: Session = Depends(get_db_alt),
+    current_user: dict = Depends(get_current_user),
+    _: dict = Depends(require_admin),
+):
+    """Create a new user."""
+    service = UserManagementService(db)
+
+    existing = UserRepository(db).get_by_email(user_data.get("email", ""))
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    user = service.create_user(user_data)
+    return user.to_dict()
+
+
 @router.get("/users/{user_id}", response_model=UserResponse)
 async def get_user_by_id(
     user_id: UUID,
@@ -131,6 +185,23 @@ async def get_user_by_id(
             detail="User not found"
         )
     return UserResponse.from_orm(user)
+
+
+@router.get("/users-alt/{user_id}", response_model=dict)
+async def get_user_by_id_alt(
+    user_id: int,
+    db: Session = Depends(get_db_alt),
+    current_user: dict = Depends(get_current_user),
+    _: dict = Depends(require_admin),
+):
+    """Get a specific user by ID."""
+    repo = UserRepository(db)
+    user = repo.get_by_id(user_id)
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return user.to_dict()
 
 
 @router.put("/users/{user_id}", response_model=UserResponse)
@@ -158,6 +229,24 @@ async def update_user(
         )
 
 
+@router.put("/users-alt/{user_id}", response_model=dict)
+async def update_user_alt(
+    user_id: int,
+    user_data: dict,
+    db: Session = Depends(get_db_alt),
+    current_user: dict = Depends(get_current_user),
+    _: dict = Depends(require_admin),
+):
+    """Update an existing user."""
+    service = UserManagementService(db)
+    user = service.update_user(user_id, user_data)
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return user.to_dict()
+
+
 @router.delete("/users/{user_id}")
 async def delete_user(
     user_id: UUID,
@@ -182,6 +271,23 @@ async def delete_user(
     # Soft delete - deactivate user instead of hard delete
     user_crud.update(db, db_obj=user, obj_in={"is_active": False})
     return {"message": "User deactivated successfully"}
+
+
+@router.delete("/users-alt/{user_id}", status_code=204)
+async def delete_user_alt(
+    user_id: int,
+    db: Session = Depends(get_db_alt),
+    current_user: dict = Depends(get_current_user),
+    _: dict = Depends(require_admin),
+):
+    """Delete a user."""
+    repo = UserRepository(db)
+    user = repo.get_by_id(user_id)
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    repo.delete(user_id)
 
 
 @router.post("/users/{user_id}/activate")
@@ -231,6 +337,29 @@ async def update_user_role(
     return {"message": f"User role updated to {role}"}
 
 
+@router.patch("/users-alt/{user_id}/role", response_model=dict)
+async def update_user_role_alt(
+    user_id: int,
+    role_data: dict,
+    db: Session = Depends(get_db_alt),
+    current_user: dict = Depends(get_current_user),
+    _: dict = Depends(require_admin),
+):
+    """Update a user's role."""
+    service = UserManagementService(db)
+    new_role = role_data.get("role")
+
+    if not new_role:
+        raise HTTPException(status_code=400, detail="Role is required")
+
+    user = service.assign_role(user_id, new_role)
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return user.to_dict()
+
+
 @router.patch("/users/{user_id}/status")
 async def update_user_status(
     user_id: UUID,
@@ -257,6 +386,29 @@ async def update_user_status(
     db.commit()
     db.refresh(user)
     return {"message": f"User status updated to {status_value}"}
+
+
+@router.patch("/users-alt/{user_id}/status", response_model=dict)
+async def toggle_user_status(
+    user_id: int,
+    status_data: dict,
+    db: Session = Depends(get_db_alt),
+    current_user: dict = Depends(get_current_user),
+    _: dict = Depends(require_admin),
+):
+    """Activate or deactivate a user account."""
+    service = UserManagementService(db)
+    is_active = status_data.get("is_active")
+
+    if is_active is None:
+        raise HTTPException(status_code=400, detail="is_active field is required")
+
+    user = service.set_user_active(user_id, is_active)
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return user.to_dict()
 
 
 @router.get("/users/{user_id}/entitlements")
@@ -335,78 +487,34 @@ async def get_project_analytics(
     ).all()
 
     # Project status distribution
-    status_distribution = db.query(
+    project_statuses = db.query(
         Project.status,
         func.count(Project.id).label('count')
     ).group_by(Project.status).all()
 
+    total_projects = db.query(Project).count()
+    active_projects = db.query(Project).filter(Project.status == "active").count()
+
     return ProjectAnalytics(
-        total_projects=db.query(Project).count(),
-        active_projects=db.query(Project).filter(Project.status == "active").count(),
-        completed_projects=db.query(Project).filter(Project.status == "completed").count(),
+        total_projects=total_projects,
+        active_projects=active_projects,
         creation_trend=[
             {"date": str(proj.date), "count": proj.count} for proj in projects_created
         ],
-        status_distribution={
-            s.status: s.count for s in status_distribution
-        },
+        status_distribution=[
+            {"status": status.status, "count": status.count} for status in project_statuses
+        ],
         period_days=days
     )
 
 
-@router.get("/system/health", response_model=SystemHealth)
-async def get_system_health(
-    current_admin: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_db)
+@router.get("/stats", response_model=dict)
+async def get_admin_stats(
+    db: Session = Depends(get_db_alt),
+    current_user: dict = Depends(get_current_user),
+    _: dict = Depends(require_admin),
 ):
-    """Get system health status"""
-
-    try:
-        # Database connectivity check
-        db.execute("SELECT 1")
-        db_status = "healthy"
-    except Exception:
-        db_status = "unhealthy"
-
-    # Memory and performance metrics would typically come from monitoring tools
-    return SystemHealth(
-        database_status=db_status,
-        api_status="healthy",
-        uptime_seconds=0,  # This would be calculated from app start time
-        memory_usage_mb=0,  # This would come from system monitoring
-        cpu_usage_percent=0.0,  # This would come from system monitoring
-        active_connections=0  # This would come from connection pool monitoring
-    )
-
-
-@router.get("/logs/audit", response_model=List[AuditLogEntry])
-async def get_audit_logs(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, le=1000),
-    action: Optional[str] = Query(None),
-    user_id: Optional[int] = Query(None),
-    days: int = Query(7, ge=1, le=90),
-    current_admin: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_db)
-):
-    """Get audit logs with filtering"""
-
-    # This would typically query an audit_logs table
-    # For now, return empty list as audit logging would be implemented separately
-    return []
-
-
-@router.post("/maintenance/cleanup")
-async def cleanup_system(
-    current_admin: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_db)
-):
-    """Perform system cleanup operations"""
-
-    # This could include operations like:
-    # - Cleaning up expired sessions
-    # - Removing old temporary files
-    # - Archiving old logs
-    # - Optimizing database
-
-    return {"message": "System cleanup completed successfully"}
+    """Get administrative statistics."""
+    repo = UserRepository(db)
+    stats = repo.get_user_stats()
+    return stats
