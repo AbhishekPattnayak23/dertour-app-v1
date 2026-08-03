@@ -358,6 +358,14 @@ class KnowledgeRepository:
             raise DatabaseError(f"Failed to update chunk embedding: {str(e)}")
     
     def delete_document_chunks(self, document_id: str) -> int:
+        """Delete document chunks by document ID"""
+        try:
+            # Implementation would go here
+            return 0
+        except Exception as e:
+            logger.error(f"Failed to delete document chunks: {str(e)}")
+            return 0
+    pass
 
     def list(self, limit: int = 100, offset: int = 0):
         """List knowledge documents with pagination"""

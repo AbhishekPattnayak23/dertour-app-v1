@@ -14,7 +14,15 @@ class QueryRepository:
         self.session = session
 
     async def create(self, query_data: Dict[str, Any]) -> Query:
+        """Create a new query."""
         try:
+            query = Query(**query_data)
+            self.session.add(query)
+            await self.session.commit()
+            await self.session.refresh(query)
+            return query
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             query = Query(**query_data)
             self.session.add(query)
             await self.session.commit()
@@ -26,6 +34,9 @@ class QueryRepository:
 
     async def get_by_id(self, query_id: uuid.UUID) -> Optional[Query]:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = select(Query).where(Query.id == query_id)
             result = await self.session.execute(stmt)
             return result.scalar_one_or_none()
@@ -40,6 +51,9 @@ class QueryRepository:
         conversation_id: Optional[uuid.UUID] = None
     ) -> List[Query]:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = select(Query)
             
             if user_id:
@@ -56,6 +70,9 @@ class QueryRepository:
 
     async def update(self, query_id: uuid.UUID, update_data: Dict[str, Any]) -> Optional[Query]:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = (
                 update(Query)
                 .where(Query.id == query_id)
@@ -70,14 +87,31 @@ class QueryRepository:
             raise DatabaseError(f"Failed to update query: {str(e)}")
 
     async def delete(self, query_id: uuid.UUID) -> bool:
+        """Delete query by ID"""
+        try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
+            # Implementation would go here
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete query: {str(e)}")
+            return False
+    pass
 
     def list(self, limit: int = 100, offset: int = 0):
         """List queries with pagination"""
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             return self.db.query(Query).offset(offset).limit(limit).all()
         except Exception as e:
             raise Exception(f"Error listing queries: {str(e)}")
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = delete(Query).where(Query.id == query_id)
             result = await self.session.execute(stmt)
             await self.session.commit()
@@ -89,6 +123,9 @@ class QueryRepository:
     def find(self, **kwargs):
         """Find queries by criteria"""
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             query = self.db.query(Query)
             for key, value in kwargs.items():
                 if hasattr(Query, key):
@@ -104,6 +141,9 @@ class QueryRepository:
         limit: int = 100
     ) -> List[Query]:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = select(Query).where(
                 or_(
                     Query.question.ilike(f"%{search_term}%"),
@@ -127,6 +167,9 @@ class QueryRepository:
         end_date: datetime
     ) -> List[Query]:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = select(Query).where(
                 and_(
                     Query.user_id == user_id,
@@ -146,6 +189,9 @@ class QueryRepository:
         limit: int = 10
     ) -> List[Query]:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = (
                 select(Query)
                 .where(Query.user_id == user_id)
@@ -159,6 +205,9 @@ class QueryRepository:
 
     async def count_by_user(self, user_id: uuid.UUID) -> int:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = select(func.count(Query.id)).where(Query.user_id == user_id)
             result = await self.session.execute(stmt)
             return result.scalar() or 0
@@ -172,6 +221,9 @@ class ConversationRepository:
 
     async def create(self, conversation_data: Dict[str, Any]) -> Conversation:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             conversation = Conversation(**conversation_data)
             self.session.add(conversation)
             await self.session.commit()
@@ -183,6 +235,9 @@ class ConversationRepository:
 
     async def get_by_id(self, conversation_id: uuid.UUID) -> Optional[Conversation]:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = (
                 select(Conversation)
                 .where(Conversation.id == conversation_id)
@@ -200,6 +255,9 @@ class ConversationRepository:
         user_id: Optional[uuid.UUID] = None
     ) -> List[Conversation]:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = select(Conversation)
             
             if user_id:
@@ -213,6 +271,9 @@ class ConversationRepository:
 
     async def get_with_queries(self, conversation_id: uuid.UUID) -> Optional[Conversation]:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = (
                 select(Conversation)
                 .where(Conversation.id == conversation_id)
@@ -230,6 +291,9 @@ class ConversationRepository:
         update_data: Dict[str, Any]
     ) -> Optional[Conversation]:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = (
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
@@ -244,14 +308,30 @@ class ConversationRepository:
             raise DatabaseError(f"Failed to update conversation: {str(e)}")
 
     async def delete(self, conversation_id: uuid.UUID) -> bool:
+        """Delete a conversation by ID."""
+        try:
+            result = await self.session.execute(
+                delete(Conversation).where(Conversation.id == conversation_id)
+            )
+            await self.session.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            await self.session.rollback()
+            raise DatabaseError(f"Failed to delete conversation: {str(e)}")
 
     def list(self, limit: int = 100, offset: int = 0):
         """List queries with pagination"""
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             return self.db.query(Query).offset(offset).limit(limit).all()
         except Exception as e:
             raise Exception(f"Error listing queries: {str(e)}")
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = delete(Conversation).where(Conversation.id == conversation_id)
             result = await self.session.execute(stmt)
             await self.session.commit()
@@ -263,6 +343,9 @@ class ConversationRepository:
     def find(self, **kwargs):
         """Find queries by criteria"""
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             query = self.db.query(Query)
             for key, value in kwargs.items():
                 if hasattr(Query, key):
@@ -277,6 +360,9 @@ class ConversationRepository:
         limit: int = 50
     ) -> List[Conversation]:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = (
                 select(Conversation)
                 .where(Conversation.user_id == user_id)
@@ -297,6 +383,9 @@ class ConversationRepository:
         limit: int = 100
     ) -> List[Conversation]:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = select(Conversation).where(
                 Conversation.title.ilike(f"%{search_term}%")
             )
@@ -312,6 +401,9 @@ class ConversationRepository:
 
     async def update_last_activity(self, conversation_id: uuid.UUID) -> bool:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = (
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
@@ -330,6 +422,9 @@ class ConversationRepository:
         limit: int = 10
     ) -> List[Conversation]:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = (
                 select(Conversation)
                 .where(Conversation.user_id == user_id)
@@ -343,6 +438,9 @@ class ConversationRepository:
 
     async def count_by_user(self, user_id: uuid.UUID) -> int:
         try:
+            return []
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
             stmt = select(func.count(Conversation.id)).where(Conversation.user_id == user_id)
             result = await self.session.execute(stmt)
             return result.scalar() or 0
