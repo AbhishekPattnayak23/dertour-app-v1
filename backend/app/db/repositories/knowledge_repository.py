@@ -1,7 +1,6 @@
 from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 import uuid
-from sqlalchemy import text, and_, or_, func, desc, asc
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 import numpy as np
